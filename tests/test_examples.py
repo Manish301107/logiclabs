@@ -200,7 +200,36 @@ def test_gemini_errors_give_specific_safe_guidance(code, status, message, expect
 
 def test_gemini_network_error_is_actionable():
     reason = logic._gemini_error_reason(TimeoutError("request timed out"))
-    assert "Could not connect" in reason
+    assert "too long to respond" in reason
+
+
+def test_gemini_request_has_a_timeout_and_falls_back_on_timeout(monkeypatch):
+    from google import genai
+
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            raise TimeoutError("request timed out")
+
+    class FakeClient:
+        models = FakeModels()
+
+    def create_client(**kwargs):
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
+    monkeypatch.setattr(genai, "Client", create_client)
+
+    text, error = logic.ask_gemini("Generate five questions.", personal_key_only=True)
+
+    http_options = captured["http_options"]
+    assert http_options.timeout == logic.GEMINI_TIMEOUT_MS
+    assert http_options.retry_options.attempts == 1
+    assert text is None
+    assert "too long to respond" in error
+    assert "Showing sample-mode content" in error
 
 
 def test_gemini_discovers_and_uses_a_model_when_configured_model_is_missing(monkeypatch):
@@ -233,7 +262,7 @@ def test_gemini_discovers_and_uses_a_model_when_configured_model_is_missing(monk
     monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
     monkeypatch.setattr(logic, "_get_cached_fallback_model", lambda key: None)
     monkeypatch.setattr(logic, "_cache_fallback_model", lambda key, model: None)
-    monkeypatch.setattr(genai, "Client", lambda api_key: FakeClient())
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: FakeClient())
 
     text, notice = logic.ask_gemini("Generate a Python practice question.", personal_key_only=True)
 
@@ -272,7 +301,7 @@ def test_gemini_fallback_uses_cached_model_without_listing(monkeypatch):
     monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
     monkeypatch.setattr(logic, "_get_cached_fallback_model", lambda key: "gemini-3.8-flash")
     monkeypatch.setattr(logic, "_cache_fallback_model", lambda key, model: None)
-    monkeypatch.setattr(genai, "Client", lambda api_key: FakeClient())
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: FakeClient())
 
     text, notice = logic.ask_gemini("Hello")
 

@@ -44,8 +44,11 @@ its explanation if an answer seems incorrect.
 
 If a Gemini call fails, the app reports a safe, specific reason (for example, an
 invalid key, access restriction, quota limit, unavailable model, or connection
-problem) instead of a generic availability message. Replace a rejected key from the
-sidebar; check the Google AI Studio project and quota for access or quota errors.
+problem or timeout) instead of a generic availability message. Requests time out
+after 30 seconds with one attempt, then quiz and question generation use built-in
+questions instead of remaining stuck on a loading spinner. Replace a rejected key
+from the sidebar; check the Google AI Studio project and quota for access or quota
+errors.
 
 ## Run
 ```bash

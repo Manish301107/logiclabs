@@ -230,6 +230,31 @@ def test_hard_practice_uses_intermediate_samples_without_a_personal_key():
     assert not at.exception
 
 
+def test_practice_quiz_falls_back_when_gemini_times_out(monkeypatch):
+    from google import genai
+
+    class FakeModels:
+        def generate_content(self, *, model, contents, config):
+            raise TimeoutError("request timed out")
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
+    monkeypatch.setattr(genai, "Client", lambda **kwargs: FakeClient())
+
+    at = new_app()
+    at.sidebar.radio[0].set_value("Practice").run()
+    at.selectbox(key="quiz_topic").set_value("Loops").run()
+    btn(at, "Start quiz").click().run()
+
+    quiz = at.session_state.quiz
+    assert len(quiz["questions"]) == 5
+    assert not quiz["from_ai"]
+    assert "too long to respond" in quiz["error"]
+    assert not at.exception
+
+
 def test_about_page():
     at = new_app()
     at.sidebar.radio[0].set_value("About").run()

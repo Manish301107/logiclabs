@@ -16,6 +16,7 @@ from examples_data import EXAMPLES, PRACTICE_EXTRAS, TOPICS, CONCEPT_NOTES
 EXAMPLES_BY_ID = {e["id"]: e for e in EXAMPLES}
 PROGRESS_FILE = Path(__file__).parent / "progress.json"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_TIMEOUT_MS = 30_000
 GEMINI_MODEL_FALLBACKS = (
     "gemini-3.8-flash",
     "gemini-3.6-flash",
@@ -244,6 +245,8 @@ def _gemini_error_reason(exc: Exception) -> str:
         return f"Gemini model '{GEMINI_MODEL}' was not found or is unavailable. Check the GEMINI_MODEL setting."
     if code == 400 or status in {"INVALID_ARGUMENT", "FAILED_PRECONDITION"}:
         return f"Gemini rejected the request for model '{GEMINI_MODEL}'. Check the model setting and API access."
+    if "timeout" in error_type or "deadline" in status:
+        return "Gemini took too long to respond. Built-in fallback content will be shown instead."
     if code >= 500 or status in {"INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"}:
         return "Google's Gemini service is temporarily failing. Please try again later."
     if any(term in error_type for term in ("connect", "timeout", "network")):
@@ -323,7 +326,13 @@ def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=key)
+        client = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(
+                timeout=GEMINI_TIMEOUT_MS,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
         selected_model = GEMINI_MODEL
         try:
