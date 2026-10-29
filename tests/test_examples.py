@@ -162,7 +162,7 @@ def test_invalid_ai_question_set_uses_complete_fallback(monkeypatch):
     )
 
     assert not from_ai
-    assert "not in a usable format" in error
+    assert "incomplete or invalid" in error
     assert questions[0]["id"] == fallback[0]["id"]
 
 
@@ -201,3 +201,81 @@ def test_gemini_errors_give_specific_safe_guidance(code, status, message, expect
 def test_gemini_network_error_is_actionable():
     reason = logic._gemini_error_reason(TimeoutError("request timed out"))
     assert "Could not connect" in reason
+
+
+def test_gemini_discovers_and_uses_a_model_when_configured_model_is_missing(monkeypatch):
+    from google import genai
+    from types import SimpleNamespace
+
+    calls = []
+
+    class ModelMissingError(Exception):
+        code = 404
+        status = "NOT_FOUND"
+        message = "models/gemini-2.5-flash is not found for generateContent"
+
+    class FakeModels:
+        def list(self, config):
+            return [
+                SimpleNamespace(name="models/gemini-3.8-flash", supported_actions=["generateContent"]),
+                SimpleNamespace(name="models/gemini-embedding", supported_actions=["embedContent"]),
+            ]
+
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == logic.GEMINI_MODEL:
+                raise ModelMissingError()
+            return SimpleNamespace(text="Generated with fallback model.")
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
+    monkeypatch.setattr(logic, "_get_cached_fallback_model", lambda key: None)
+    monkeypatch.setattr(logic, "_cache_fallback_model", lambda key, model: None)
+    monkeypatch.setattr(genai, "Client", lambda api_key: FakeClient())
+
+    text, notice = logic.ask_gemini("Generate a Python practice question.", personal_key_only=True)
+
+    assert text == "Generated with fallback model.", notice
+    assert notice == (
+        f"Configured model '{logic.GEMINI_MODEL}' was unavailable; "
+        "using 'gemini-3.8-flash' instead."
+    )
+    assert calls == [logic.GEMINI_MODEL, "gemini-3.8-flash"]
+
+
+def test_gemini_fallback_uses_cached_model_without_listing(monkeypatch):
+    from google import genai
+    from types import SimpleNamespace
+
+    calls = []
+
+    class ModelMissingError(Exception):
+        code = 404
+        status = "NOT_FOUND"
+        message = "configured model not found"
+
+    class FakeModels:
+        def list(self, config):
+            raise AssertionError("Should use the cached available model first.")
+
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == logic.GEMINI_MODEL:
+                raise ModelMissingError()
+            return SimpleNamespace(text="Cached model worked.")
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(logic, "get_api_key", lambda **kwargs: "test-personal-key")
+    monkeypatch.setattr(logic, "_get_cached_fallback_model", lambda key: "gemini-3.8-flash")
+    monkeypatch.setattr(logic, "_cache_fallback_model", lambda key, model: None)
+    monkeypatch.setattr(genai, "Client", lambda api_key: FakeClient())
+
+    text, notice = logic.ask_gemini("Hello")
+
+    assert text == "Cached model worked.", notice
+    assert "gemini-3.8-flash" in notice
+    assert calls == [logic.GEMINI_MODEL, "gemini-3.8-flash"]

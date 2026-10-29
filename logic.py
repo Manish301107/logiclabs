@@ -4,6 +4,7 @@ Kept free of Streamlit so it can be unit-tested.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,13 @@ from examples_data import EXAMPLES, PRACTICE_EXTRAS, TOPICS, CONCEPT_NOTES
 EXAMPLES_BY_ID = {e["id"]: e for e in EXAMPLES}
 PROGRESS_FILE = Path(__file__).parent / "progress.json"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL_FALLBACKS = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
 DIFFICULTIES = {
     "Low": "Beginner",
     "Medium": "Intermediate",
@@ -246,6 +254,63 @@ def _gemini_error_reason(exc: Exception) -> str:
     )
 
 
+def _is_missing_model_error(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    status = str(getattr(exc, "status", "") or "").upper()
+    message = str(getattr(exc, "message", "") or str(exc)).lower()
+    return (
+        code == 404
+        and (
+            "model" in message
+            or status in {"MODEL_NOT_FOUND", "NOT_FOUND"}
+        )
+    )
+
+
+def _model_cache_key(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _get_cached_fallback_model(api_key: str) -> str | None:
+    try:
+        import streamlit as st
+
+        cached = st.session_state.get("_logic_gemini_model_fallback")
+        if isinstance(cached, dict) and cached.get("key") == _model_cache_key(api_key):
+            model = cached.get("model")
+            return model if isinstance(model, str) else None
+    except Exception:
+        return None
+    return None
+
+
+def _cache_fallback_model(api_key: str, model: str) -> None:
+    try:
+        import streamlit as st
+
+        st.session_state["_logic_gemini_model_fallback"] = {
+            "key": _model_cache_key(api_key),
+            "model": model,
+        }
+    except Exception:
+        return
+
+
+def _discover_text_models(client) -> list[str]:
+    """Find models this key can use for text generation."""
+    available: set[str] = set()
+    for model in client.models.list(config={"query_base": True}):
+        name = getattr(model, "name", None)
+        actions = getattr(model, "supported_actions", None) or []
+        if not isinstance(name, str) or "generateContent" not in actions:
+            continue
+        model_id = name.rsplit("/", 1)[-1]
+        if model_id.startswith("gemini-"):
+            available.add(model_id)
+    preferred = [model for model in GEMINI_MODEL_FALLBACKS if model in available]
+    return preferred + sorted(available - set(preferred))
+
+
 def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None, str | None]:
     """Return (text, error). Never raises."""
     key = get_api_key(personal_only=personal_key_only)
@@ -259,15 +324,65 @@ def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None
         from google.genai import types
 
         client = genai.Client(api_key=key)
-        resp = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-        )
+        config = types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+        selected_model = GEMINI_MODEL
+        try:
+            resp = client.models.generate_content(
+                model=selected_model,
+                contents=prompt,
+                config=config,
+            )
+        except Exception as exc:
+            if not _is_missing_model_error(exc):
+                raise
+
+            cached_model = _get_cached_fallback_model(key)
+            attempted_models = {GEMINI_MODEL}
+            fallback_models = [cached_model] if cached_model else _discover_text_models(client)
+            discovered_after_cache = not cached_model
+            fallback_succeeded = False
+
+            while fallback_models:
+                for fallback_model in fallback_models:
+                    if fallback_model in attempted_models:
+                        continue
+                    attempted_models.add(fallback_model)
+                    try:
+                        resp = client.models.generate_content(
+                            model=fallback_model,
+                            contents=prompt,
+                            config=config,
+                        )
+                        selected_model = fallback_model
+                        _cache_fallback_model(key, fallback_model)
+                        fallback_succeeded = True
+                        break
+                    except Exception as fallback_error:
+                        if not _is_missing_model_error(fallback_error):
+                            raise
+                if fallback_succeeded:
+                    break
+                if not discovered_after_cache:
+                    fallback_models = [
+                        model for model in _discover_text_models(client)
+                        if model not in attempted_models
+                    ]
+                    discovered_after_cache = True
+                else:
+                    break
+
+            if not fallback_succeeded:
+                raise exc
+
         text = (resp.text or "").strip()
         if not text:
             return None, "Gemini returned an empty answer — showing sample-mode content."
-        return text, None
+        notice = (
+            f"Configured model '{GEMINI_MODEL}' was unavailable; using '{selected_model}' instead."
+            if selected_model != GEMINI_MODEL
+            else None
+        )
+        return text, notice
     except Exception as exc:  # network, quota, invalid key, safety block...
         reason = _gemini_error_reason(exc)
         return None, f"{reason} Showing sample-mode content instead."
@@ -279,10 +394,12 @@ def sample_concept(topic: str, question: str = "") -> str:
 
 
 def sample_why_wrong(example: dict, user_answer: str) -> str:
+    explanation = example["explanation"]
+    explanation_lines = explanation if isinstance(explanation, list) else [explanation]
     return (
         f"**Why that isn't right (sample mode)**\n\nYou answered:\n```\n{user_answer or '(empty)'}\n```\n"
         f"The correct output is:\n```\n{example['answer']}\n```\n**Hint:** {example['hint']}\n\n"
-        + "\n".join(f"- {line}" for line in example["explanation"])
+        + "\n".join(f"- {line}" for line in explanation_lines)
     )
 
 
@@ -290,20 +407,27 @@ def explain_concept(topic: str, question: str) -> tuple[str, bool, str | None]:
     q = question.strip() or f"Explain the key ideas of {topic} in Python for a beginner."
     text, err = ask_gemini(f"Topic: {topic}\nStudent question: {q}")
     if text:
-        return text, True, None
+        return text, True, err
     return sample_concept(topic, q), False, err
 
 
 def explain_wrong(example: dict, user_answer: str) -> tuple[str, bool, str | None]:
-    prompt = (
-        f"A beginner predicted the output of this Python program.\n\nCode:\n```python\n{example['code']}\n```\n"
-        f"Correct output (verified):\n```\n{example['answer']}\n```\nStudent's answer:\n```\n{user_answer}\n```\n"
-        "Explain kindly which misconception likely caused their answer, then walk through the code line by line. "
-        "Do not contradict the verified correct output."
-    )
+    if example.get("code"):
+        prompt = (
+            f"A beginner predicted the output of this Python program.\n\nCode:\n```python\n{example['code']}\n```\n"
+            f"Correct output (verified):\n```\n{example['answer']}\n```\nStudent's answer:\n```\n{user_answer}\n```\n"
+            "Explain kindly which misconception likely caused their answer, then walk through the code line by line. "
+            "Do not contradict the verified correct output."
+        )
+    else:
+        prompt = (
+            f"A beginner answered this Python question:\n{example['question']}\n"
+            f"Correct answer: {example['answer']}\nStudent's answer: {user_answer}\n"
+            "Kindly explain the relevant Python concept and why the correct answer is right."
+        )
     text, err = ask_gemini(prompt)
     if text:
-        return text, True, None
+        return text, True, err
     return sample_why_wrong(example, user_answer), False, err
 
 
@@ -443,8 +567,11 @@ def generate_question_set(
     if text:
         generated = _validated_generated_questions(_extract_json(text), topic, difficulty, size)
         if generated is not None:
-            return generated, True, None
-        err = "Gemini's questions were not in a usable format — showing built-in questions instead."
+            return generated, True, err
+        err = (
+            "Gemini returned an incomplete or invalid question set. "
+            "Showing built-in questions instead."
+        )
 
     fallback = fallback_questions if fallback_questions is not None else sample_questions(topic, difficulty)
     return [dict(question) for question in fallback[:size]], False, err
