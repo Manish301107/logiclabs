@@ -6,8 +6,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from api_key_storage import COMPONENT_STATE_KEY
 import logic
 
 
@@ -15,12 +17,26 @@ import logic
 def isolated(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        logic,
+        "get_api_key",
+        lambda visitor_key=None: visitor_key or st.session_state.get("visitor_gemini_api_key"),
+    )
     monkeypatch.setattr(logic, "PROGRESS_FILE", tmp_path / "progress.json")
     monkeypatch.chdir(ROOT)
 
 
 def new_app():
     at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=30)
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": None,
+            "setup_done": True,
+            "error": None,
+            "command_id": None,
+        }
+    }
     at.run()
     assert not at.exception
     return at
@@ -37,6 +53,39 @@ def test_home_renders_recommendations():
     at = new_app()
     assert any("Welcome to LogicLab AI" in m.value for m in at.markdown)
     assert sum(1 for b in at.button if b.label == "Open example →") == 3
+
+
+def test_first_visit_can_save_a_personal_gemini_key():
+    at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=30)
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": None,
+            "setup_done": False,
+            "error": None,
+            "command_id": None,
+        }
+    }
+    at.run()
+    assert any(field.label == "Gemini API key" for field in at.text_input)
+    at.text_input(key="visitor_gemini_api_key_input").set_value("visitor-test-key")
+    btn(at, "Save key").click().run()
+    command = at.session_state.pending_api_key_command
+    assert command["action"] == "save"
+    assert command["apiKey"] == "visitor-test-key"
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": "visitor-test-key",
+            "setup_done": True,
+            "error": None,
+            "command_id": command["id"],
+        }
+    }
+    at.run()
+    assert at.session_state.visitor_gemini_api_key == "visitor-test-key"
+    assert at.session_state.pending_api_key_command is None
+    assert not at.exception
 
 
 def test_explore_select_check_wrong_then_right():

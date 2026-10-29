@@ -149,7 +149,16 @@ def build_quiz(topic: str, size: int = 5) -> list[dict]:
 
 
 # ---------- Gemini (optional) ----------
-def get_api_key() -> str | None:
+def get_api_key(visitor_key: str | None = None) -> str | None:
+    if visitor_key is None:
+        try:
+            import streamlit as st
+            visitor_key = st.session_state.get("visitor_gemini_api_key")
+        except Exception:
+            visitor_key = None
+    if visitor_key and visitor_key.strip():
+        return visitor_key.strip()
+
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if key:
         return key.strip() or None

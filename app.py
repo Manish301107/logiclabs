@@ -6,8 +6,11 @@ against verified expected outputs stored in examples_data.py.
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import streamlit as st
 
+from api_key_storage import mount_api_key_storage
 from examples_data import EXAMPLES, TOPICS
 from logic import (
     EXAMPLES_BY_ID,
@@ -87,10 +90,95 @@ ss.setdefault("ai_text", {})       # key -> (text, from_ai, err)
 ss.setdefault("quiz", None)
 ss.setdefault("extra_q", {})       # topic -> question dict
 ss.setdefault("extra_result", {})  # topic -> {"choice", "correct"}
+ss.setdefault("visitor_gemini_api_key", None)
+ss.setdefault("api_key_setup_done", False)
+ss.setdefault("api_key_dialog_open", False)
+ss.setdefault("pending_api_key_command", None)
+ss.setdefault("api_key_storage_error", None)
 
 
 def persist():
     save_progress(ss.progress)
+
+
+def queue_api_key_command(action: str, api_key: str | None = None):
+    ss.pending_api_key_command = {
+        "id": uuid4().hex,
+        "action": action,
+        "apiKey": api_key,
+    }
+    ss.api_key_dialog_open = False
+
+
+def save_visitor_api_key():
+    api_key = ss.get("visitor_gemini_api_key_input", "").strip()
+    if not api_key:
+        ss.api_key_input_error = "Enter a Gemini API key, or continue without one."
+        return
+    ss.pop("api_key_input_error", None)
+    ss.pop("visitor_gemini_api_key_input", None)
+    queue_api_key_command("save", api_key)
+
+
+def skip_visitor_api_key():
+    ss.pop("api_key_input_error", None)
+    ss.pop("visitor_gemini_api_key_input", None)
+    queue_api_key_command("skip")
+
+
+def clear_visitor_api_key():
+    ss.pop("api_key_input_error", None)
+    ss.pop("visitor_gemini_api_key_input", None)
+    queue_api_key_command("clear")
+
+
+def open_api_key_dialog():
+    ss.api_key_dialog_open = True
+    ss.pop("api_key_input_error", None)
+    ss.pop("visitor_gemini_api_key_input", None)
+
+
+@st.dialog("Connect your Gemini API key")
+def api_key_dialog():
+    st.markdown(
+        "Add your own key to use the Gemini tutor. It will be remembered in this "
+        "browser and can be changed or removed from the sidebar."
+    )
+    st.caption(
+        "Your key is stored in this browser, not in the project or a shared database. "
+        "It is sent to this app's server when the tutor calls Gemini. Avoid saving it "
+        "on shared devices."
+    )
+    if ss.get("api_key_input_error"):
+        st.error(ss.api_key_input_error)
+
+    st.text_input(
+        "Gemini API key",
+        type="password",
+        key="visitor_gemini_api_key_input",
+        placeholder="Paste your Gemini API key",
+    )
+    st.button(
+        "Save key",
+        type="primary",
+        on_click=save_visitor_api_key,
+        key="save_visitor_gemini_api_key",
+        width="stretch",
+    )
+    st.button(
+        "Continue without changing" if ss.api_key_setup_done
+        else "Continue without a personal key",
+        on_click=skip_visitor_api_key,
+        key="skip_visitor_gemini_api_key",
+        width="stretch",
+    )
+    if ss.visitor_gemini_api_key:
+        st.button(
+            "Remove saved key",
+            on_click=clear_visitor_api_key,
+            key="clear_visitor_gemini_api_key",
+            width="stretch",
+        )
 
 
 def go(page: str, example_id: str | None = None):
@@ -419,6 +507,7 @@ instead of writing code from scratch.
 - **Sample mode:** with no API key, all examples, checks, quizzes and progress still work, and built-in notes replace the AI.
 - **Safe by design:** the app never runs code that users type.
 - **Progress:** saved for this session and in a local `progress.json` file. No login needed.
+- **Your Gemini key:** optional visitor keys are stored in the current browser and sent to this app's server only when calling Gemini. Avoid saving keys on shared devices.
 """
     )
     st.caption(f"AI status: {'Gemini connected' if gemini_available() else 'Sample mode (no GEMINI_API_KEY)'}")
@@ -438,13 +527,56 @@ def render_sidebar():
     st.divider()
     if gemini_available():
         st.success("AI tutor: Gemini connected", icon="✨")
+        st.caption(
+            "Using your saved key." if ss.visitor_gemini_api_key
+            else "Using the app's configured key."
+        )
     else:
         st.info("Sample mode: no GEMINI_API_KEY. Everything except live AI answers works.", icon="ℹ️")
+    st.button(
+        "Change API key" if ss.visitor_gemini_api_key else "Add your Gemini API key",
+        on_click=open_api_key_dialog,
+        use_container_width=True,
+    )
 
 
 
 ROUTES = {"Home": page_home, "Explore Examples": page_explore, "Practice": page_practice,
           "My Progress": page_progress, "About": page_about}
+
+pending_api_key_command = ss.pending_api_key_command
+api_key_storage_state = mount_api_key_storage(pending_api_key_command)
+command_acknowledged = bool(
+    pending_api_key_command
+    and api_key_storage_state.get("command_id") == pending_api_key_command["id"]
+)
+
+if not api_key_storage_state.get("ready") or (pending_api_key_command and not command_acknowledged):
+    st.info("Loading your saved AI settings…" if not pending_api_key_command else "Saving your key in this browser…")
+    st.stop()
+
+if command_acknowledged:
+    if api_key_storage_state.get("error"):
+        if pending_api_key_command["action"] == "save":
+            ss.visitor_gemini_api_key = pending_api_key_command["apiKey"]
+        elif pending_api_key_command["action"] == "clear":
+            ss.visitor_gemini_api_key = None
+        ss.api_key_setup_done = True
+        ss.api_key_storage_error = api_key_storage_state["error"]
+    else:
+        ss.visitor_gemini_api_key = api_key_storage_state.get("api_key")
+        ss.api_key_setup_done = bool(api_key_storage_state.get("setup_done"))
+        ss.api_key_storage_error = None
+    ss.pending_api_key_command = None
+elif not api_key_storage_state.get("error"):
+    ss.visitor_gemini_api_key = api_key_storage_state.get("api_key")
+    ss.api_key_setup_done = bool(api_key_storage_state.get("setup_done"))
+    ss.api_key_storage_error = None
+else:
+    ss.api_key_storage_error = api_key_storage_state["error"]
+
+if ss.api_key_storage_error:
+    st.warning(ss.api_key_storage_error)
 
 try:
     ROUTES.get(ss.nav, page_home)()
@@ -453,3 +585,5 @@ except Exception as exc:  # last-resort guard so one bug never blanks the app
     st.exception(exc)
 
 render_sidebar()  # drawn after the page so stats include this run's attempt
+if not ss.api_key_setup_done or ss.api_key_dialog_open:
+    api_key_dialog()

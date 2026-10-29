@@ -29,6 +29,14 @@ pip install -r requirements.txt
 
 If you skip this step, the app runs in **sample mode**, and the sidebar tells you so.
 
+Visitors can also enter their own key in the app's first-visit prompt. Their key is
+saved in that browser's local storage, takes precedence over the deployment key, and
+can be changed or removed from the sidebar. It is not written to the repository or a
+shared database, but it is sent to the app server when the tutor calls Gemini. Browser
+storage is not encrypted, so visitors should not save keys on shared devices. They can
+continue without a personal key to use the deployment key (if configured) or sample
+mode.
+
 ## Run
 ```bash
 streamlit run app.py

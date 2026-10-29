@@ -72,6 +72,7 @@ def test_filters_and_quiz():
 def test_sample_mode_without_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr(logic, "get_api_key", lambda visitor_key=None: visitor_key.strip() if visitor_key else None)
     assert not logic.gemini_available()
     text, from_ai, err = logic.explain_concept("Loops", "what is range?")
     assert not from_ai and "range" in text and err
@@ -79,3 +80,8 @@ def test_sample_mode_without_key(monkeypatch):
     assert not from_ai and q["answer"] in q["choices"]
     text, from_ai, _ = logic.explain_wrong(EXAMPLES[0], "3 3")
     assert not from_ai and EXAMPLES[0]["answer"] in text
+
+
+def test_visitor_api_key_overrides_configured_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "deployment-key")
+    assert logic.get_api_key(" visitor-key ") == "visitor-key"
