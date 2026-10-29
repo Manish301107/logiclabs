@@ -157,7 +157,7 @@ def test_explore_select_check_wrong_then_right():
     at.selectbox(key="f_topic").set_value("Loops").run()
     at.segmented_control(key="f_difficulty").set_value("Low").run()
     btn(at, "Generate 5 questions").click().run()
-    assert sum(1 for b in at.button if b.label == "Open question →") == 1
+    assert sum(1 for b in at.button if b.label == "Open question →") == 5
     at.button(key="exp-loop-sum").click().run()
     assert any("Summing with range()" in m.value for m in at.markdown)
 
@@ -179,6 +179,11 @@ def test_explore_select_check_wrong_then_right():
 
     s = logic.compute_stats(at.session_state.progress)
     assert s["total_attempts"] == 2 and s["correct"] == 1
+    btn(at, "← Back to questions").click().run()
+    at.selectbox(key="f_topic").set_value("Loops").run()
+    at.segmented_control(key="f_difficulty").set_value("Low").run()
+    at.button(key="exp-px-loop-1").click().run()
+    assert any("How many times does" in m.value for m in at.markdown)
     assert not at.exception
 
 
@@ -221,7 +226,7 @@ def test_hard_practice_uses_intermediate_samples_without_a_personal_key():
     quiz = at.session_state.quiz
     assert quiz["difficulty"] == "Hard"
     assert {question["id"] for question in quiz["questions"]} == sample_ids
-    assert all(logic.EXAMPLES_BY_ID[question["id"]]["level"] == "Intermediate" for question in quiz["questions"])
+    assert len(quiz["questions"]) == 5
     assert not at.exception
 
 

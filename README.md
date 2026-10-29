@@ -3,11 +3,11 @@
 LogicLab AI helps beginners learn Python by **predicting the output of short programs**. It was built for a Samsung Innovation Campus project with Streamlit and the Google Gen AI SDK (Gemini).
 
 ## Features
-- **Explore:** choose one of 10 Python topics and a Low, Medium, or Hard difficulty, then generate five fresh questions with your saved personal Gemini key. Generated sets remain available during the current session. Without a personal key, the app uses the verified built-in examples for that topic; Hard uses intermediate samples where available.
+- **Explore:** choose one of 10 Python topics and a Low, Medium, or Hard difficulty, then generate five fresh questions with your saved personal Gemini key. Generated sets remain available during the current session. Without a personal key, the app shows five built-in questions per topic, preferring examples closest to the selected level.
 - **Check & Explain:** answer by multiple choice or by typing your prediction. Built-in answers are graded **deterministically** against verified output; generated questions are checked against their generated answer key. Extra spaces and blank lines are ignored, but the content must match. You also get Show Hint and Show Explanation.
-- **Practice mode:** with a personal key, generate a five-question quiz at your chosen difficulty, with feedback after each question, a final score, mistake review, and an extra question at the same difficulty. Without one, the quiz uses matching built-in examples.
+- **Practice mode:** with a personal key, generate a five-question quiz at your chosen difficulty, with feedback after each question, a final score, mistake review, and an extra question at the same difficulty. Without one, the quiz uses five built-in questions.
 - **AI tutor (Gemini):** explains mistakes and topics. Tutoring can use the saved visitor key or configured deployment key.
-- **Sample mode:** without an available key, Explore uses the 23 verified examples and quizzes use built-in questions.
+- **Sample mode:** without a personal key, Explore, quizzes, and extra practice use verified built-in questions.
 - **My Progress:** attempts, correct answers, accuracy, accuracy per topic, strengths and weaknesses, and recommended next topics.
 - **Safety:** the app never runs code that users type.
 
@@ -41,6 +41,11 @@ sample mode for question generation.
 Gemini-generated questions and answer keys are structurally validated, but the app
 does not execute generated code or independently prove an AI-written answer. Review
 its explanation if an answer seems incorrect.
+
+If a Gemini call fails, the app reports a safe, specific reason (for example, an
+invalid key, access restriction, quota limit, unavailable model, or connection
+problem) instead of a generic availability message. Replace a rejected key from the
+sidebar; check the Google AI Studio project and quota for access or quota errors.
 
 ## Run
 ```bash

@@ -141,20 +141,24 @@ def filter_examples(query: str = "", topic: str = "All", level: str = "All") -> 
 
 
 def build_quiz(topic: str, size: int = 5, difficulty: str | None = None) -> list[dict]:
-    """Build a quiz, optionally limited to built-in examples matching a difficulty."""
+    """Build a quiz, optionally limited to built-in questions matching a difficulty."""
     if difficulty is not None:
-        examples = sample_questions(topic, difficulty)
+        examples = sample_questions(topic, difficulty, size)
         return [
             {
-                "id": example["id"],
+                "id": question["id"],
                 "topic": topic,
-                "question": example["question"],
-                "code": example["code"],
-                "choices": example["choices"],
-                "answer": example["answer"],
-                "explanation": " ".join(example["explanation"]),
+                "question": question["question"],
+                "code": question.get("code"),
+                "choices": question["choices"],
+                "answer": question["answer"],
+                "explanation": (
+                    " ".join(question["explanation"])
+                    if isinstance(question["explanation"], list)
+                    else question["explanation"]
+                ),
             }
-            for example in examples[:size]
+            for question in examples
         ]
 
     # Keep the existing five-question sample quiz for callers without a difficulty.
@@ -188,7 +192,8 @@ def get_api_key(visitor_key: str | None = None, personal_only: bool = False) -> 
         return key.strip() or None
     try:
         import streamlit as st  # secrets.toml support
-        return st.secrets.get("GEMINI_API_KEY")  # type: ignore[attr-defined]
+        secret = st.secrets.get("GEMINI_API_KEY")  # type: ignore[attr-defined]
+        return secret.strip() or None if isinstance(secret, str) else None
     except Exception:
         return None
 
@@ -208,6 +213,37 @@ SYSTEM_PROMPT = (
     "Use simple English, short sentences, and small examples. Never ask the student to run code. "
     "Keep answers under 180 words unless asked for more."
 )
+
+
+def _gemini_error_reason(exc: Exception) -> str:
+    """Explain common Gemini failures without exposing raw server text or credentials."""
+    status = str(getattr(exc, "status", "") or "").upper()
+    message = str(getattr(exc, "message", "") or str(exc)).lower()
+    code = getattr(exc, "code", None)
+    if not isinstance(code, int):
+        code = 0
+    error_type = type(exc).__name__.lower()
+
+    if code == 401 or status in {"UNAUTHENTICATED", "INVALID_API_KEY"} or (
+        "api key" in message and any(term in message for term in ("invalid", "not valid", "expired"))
+    ):
+        return "Gemini rejected the API key. Replace your saved key, or check that it is enabled in Google AI Studio."
+    if code == 403 or status in {"PERMISSION_DENIED", "PERMISSIONDENIED"}:
+        return "Gemini access is forbidden. Check the key's API restrictions, project access, and region availability."
+    if code == 429 or status in {"RESOURCE_EXHAUSTED", "QUOTA_EXCEEDED"}:
+        return "Gemini quota or rate limit reached. Check the key's Google AI Studio project and quota, then retry."
+    if code == 404 or status in {"NOT_FOUND", "MODEL_NOT_FOUND"}:
+        return f"Gemini model '{GEMINI_MODEL}' was not found or is unavailable. Check the GEMINI_MODEL setting."
+    if code == 400 or status in {"INVALID_ARGUMENT", "FAILED_PRECONDITION"}:
+        return f"Gemini rejected the request for model '{GEMINI_MODEL}'. Check the model setting and API access."
+    if code >= 500 or status in {"INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"}:
+        return "Google's Gemini service is temporarily failing. Please try again later."
+    if any(term in error_type for term in ("connect", "timeout", "network")):
+        return "Could not connect to Gemini. Check the app server's internet access and try again."
+    return (
+        f"Gemini request failed ({type(exc).__name__}). Check the saved key, model setting, "
+        "project quota, and Streamlit Cloud logs."
+    )
 
 
 def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None, str | None]:
@@ -233,13 +269,7 @@ def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None
             return None, "Gemini returned an empty answer — showing sample-mode content."
         return text, None
     except Exception as exc:  # network, quota, invalid key, safety block...
-        msg = str(exc)
-        if "API key" in msg or "401" in msg or "403" in msg or "PERMISSION" in msg:
-            reason = "Gemini rejected the API key."
-        elif "429" in msg or "quota" in msg.lower() or "RESOURCE_EXHAUSTED" in msg:
-            reason = "Gemini rate limit or quota reached."
-        else:
-            reason = "Gemini is unavailable right now."
+        reason = _gemini_error_reason(exc)
         return None, f"{reason} Showing sample-mode content instead."
 
 
@@ -287,19 +317,37 @@ def _extract_json(text: str):
         return None
 
 
-def sample_questions(topic: str, difficulty: str) -> list[dict]:
-    """Return topic examples closest to the requested difficulty."""
+def sample_questions(topic: str, difficulty: str, size: int = 5) -> list[dict]:
+    """Return a full built-in set, preferring examples closest to the requested difficulty."""
     if topic not in TOPICS:
         raise ValueError(f"Unknown topic: {topic}")
     if difficulty not in DIFFICULTIES:
         raise ValueError(f"Unknown difficulty: {difficulty}")
+    if not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= 10:
+        raise ValueError("Question set size must be an integer from 1 to 10.")
 
     sample_level = "Beginner" if difficulty == "Low" else "Intermediate"
-    matching = [
+    matching_examples = [
         example for example in EXAMPLES
         if example["topic"] == topic and example["level"] == sample_level
     ]
-    return matching or [example for example in EXAMPLES if example["topic"] == topic]
+    other_examples = [
+        example for example in EXAMPLES
+        if example["topic"] == topic and example["level"] != sample_level
+    ]
+    extras = []
+    for question in PRACTICE_EXTRAS:
+        if question["topic"] != topic:
+            continue
+        extras.append({
+            **question,
+            "title": question["question"],
+            "description": f"Built-in practice question about {topic}.",
+            "level": "Intermediate",
+            "code": None,
+            "hint": "Think about the Python rule this question is checking.",
+        })
+    return (matching_examples + extras + other_examples)[:size]
 
 
 def _validated_generated_questions(data: object, topic: str, difficulty: str, size: int) -> list[dict] | None:

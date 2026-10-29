@@ -68,10 +68,12 @@ def test_filters_and_quiz():
     assert [e["id"] for e in logic.filter_examples("banana")] == ["dict-count"]
     for t in TOPICS:
         assert 4 <= len(logic.build_quiz(t)) <= 5
-        assert all(
-            question["id"] in logic.EXAMPLES_BY_ID
-            for question in logic.build_quiz(t, difficulty="Hard")
-        )
+        for difficulty in logic.DIFFICULTIES:
+            samples = logic.sample_questions(t, difficulty)
+            assert len(samples) == 5
+            assert len({question["id"] for question in samples}) == 5
+            assert all(question["answer"] in question["choices"] for question in samples)
+            assert len(logic.build_quiz(t, difficulty=difficulty)) == 5
 
 
 def test_sample_mode_without_key(monkeypatch):
@@ -133,8 +135,8 @@ def test_question_generation_falls_back_to_matching_samples(monkeypatch):
 
     assert not from_ai and error == "Gemini quota reached."
     assert [question["id"] for question in questions] == [question["id"] for question in expected]
-    assert len(questions) == 2
-    assert all(question["level"] == "Intermediate" for question in questions)
+    assert len(questions) == 5
+    assert all(question["answer"] in question["choices"] for question in questions)
 
 
 def test_invalid_ai_question_set_uses_complete_fallback(monkeypatch):
@@ -172,3 +174,30 @@ def test_visitor_api_key_overrides_configured_key(monkeypatch):
 def test_fresh_questions_require_a_personal_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "deployment-key")
     assert logic.get_api_key(personal_only=True) is None
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "message", "expected"),
+    [
+        (400, "INVALID_ARGUMENT", "API key not valid. Secret-value", "rejected the API key"),
+        (403, "PERMISSION_DENIED", "Permission denied", "API restrictions"),
+        (429, "RESOURCE_EXHAUSTED", "Quota exceeded", "quota or rate limit"),
+        (404, "NOT_FOUND", "Model not found", "GEMINI_MODEL"),
+        (503, "UNAVAILABLE", "Service down", "temporarily failing"),
+    ],
+)
+def test_gemini_errors_give_specific_safe_guidance(code, status, message, expected):
+    class FakeAPIError(Exception):
+        def __init__(self):
+            self.code = code
+            self.status = status
+            self.message = message
+
+    reason = logic._gemini_error_reason(FakeAPIError())
+    assert expected.lower() in reason.lower()
+    assert "Secret-value" not in reason
+
+
+def test_gemini_network_error_is_actionable():
+    reason = logic._gemini_error_reason(TimeoutError("request timed out"))
+    assert "Could not connect" in reason

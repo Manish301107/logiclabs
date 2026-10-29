@@ -304,7 +304,8 @@ def render_detail(e):
     st.markdown(f'<div class="ll-muted">{escape(e["description"])}</div>', unsafe_allow_html=True)
     if e.get("_ai"):
         st.caption("AI-generated question and answer key. Review the explanation if anything seems incorrect.")
-    st.code(e["code"], language="python", line_numbers=True)
+    if e.get("code"):
+        st.code(e["code"], language="python", line_numbers=True)
     st.markdown(f"**{e['question']}**")
 
     mode = st.radio("Answer mode", ["Multiple choice", "Type my prediction"], horizontal=True, key=f"mode-{e['id']}")
@@ -404,7 +405,7 @@ def page_explore():
         return
     set_key = f"{topic}|{difficulty}"
     if st.button("Generate 5 questions", type="primary", key="generate-explore"):
-        fallback = sample_questions(topic, difficulty)
+        fallback = sample_questions(topic, difficulty, size=5)
         previous = [
             question
             for key, saved_set in ss.generated_explore.items()
@@ -436,10 +437,10 @@ def page_explore():
         st.caption(f"Fresh {difficulty.lower()} questions generated for {topic}.")
     else:
         st.caption(
-            f"Showing {len(question_set['questions'])} verified sample questions for {topic}. "
+            f"Showing {len(question_set['questions'])} built-in sample questions closest to {difficulty.lower()} for {topic}. "
             "Hard uses intermediate samples where available."
             if difficulty == "Hard"
-            else f"Showing {len(question_set['questions'])} verified sample questions for {topic}."
+            else f"Showing {len(question_set['questions'])} built-in sample questions closest to {difficulty.lower()} for {topic}."
         )
     st.markdown(f"## {topic} · {difficulty}")
     cols = st.columns(3)
@@ -671,7 +672,9 @@ instead of writing code from scratch.
 - **Your Gemini key:** optional visitor keys are stored in the current browser and sent to this app's server only when calling Gemini. Avoid saving keys on shared devices.
 """
     )
-    st.caption(f"AI status: {'Gemini connected' if gemini_available() else 'Sample mode (no GEMINI_API_KEY)'}")
+    st.caption(
+        f"AI status: {'Gemini key configured (connection is checked when used)' if gemini_available() else 'Sample mode (no GEMINI_API_KEY)'}"
+    )
 
 
 # ---------------- Sidebar ----------------
@@ -688,10 +691,11 @@ def render_sidebar():
     st.caption(f"Accuracy: {s['accuracy']*100:.0f}% · {s['total_attempts']} attempts")
     st.divider()
     if gemini_available():
-        st.success("AI tutor: Gemini connected", icon="✨")
+        st.success("Gemini key is configured", icon="✨")
         st.caption(
             "Using your saved key." if ss.visitor_gemini_api_key
-            else "The tutor uses the app's configured key; fresh question generation requires your personal key."
+            else "The tutor uses the app's configured key; fresh question generation requires your personal key. "
+                 "A live connection is confirmed only when Gemini returns a response."
         )
     else:
         st.info("Sample mode: built-in questions are available. Add a key for fresh Gemini questions.", icon="ℹ️")
