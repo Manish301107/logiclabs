@@ -6,6 +6,7 @@ against verified expected outputs stored in examples_data.py.
 """
 from __future__ import annotations
 
+from html import escape
 from uuid import uuid4
 
 import streamlit as st
@@ -17,16 +18,18 @@ from logic import (
     build_quiz,
     check_answer,
     compute_stats,
+    DIFFICULTIES,
     empty_progress,
     explain_concept,
     explain_wrong,
-    filter_examples,
     gemini_available,
     generate_practice,
+    generate_question_set,
     load_progress,
     recommend_examples,
     record_attempt,
     save_progress,
+    sample_questions,
 )
 
 st.set_page_config(page_title="LogicLab AI — Learn Python by Predicting", page_icon="🧪", layout="wide")
@@ -93,6 +96,8 @@ ss.setdefault("show_hint", set())
 ss.setdefault("show_expl", set())
 ss.setdefault("ai_text", {})       # key -> (text, from_ai, err)
 ss.setdefault("quiz", None)
+ss.setdefault("generated_explore", {})  # (topic, difficulty) -> generated question set
+ss.setdefault("practice_difficulty", "Medium")
 ss.setdefault("extra_q", {})       # topic -> question dict
 ss.setdefault("extra_result", {})  # topic -> {"choice", "correct"}
 ss.setdefault("visitor_gemini_api_key", None)
@@ -205,6 +210,22 @@ def go(page: str, example_id: str | None = None):
         ss.selected = example_id
 
 
+def go_to_topic(topic: str):
+    ss.nav = "Explore Examples"
+    ss.recommended_topic = topic
+    ss.selected = None
+
+
+def find_explore_question(question_id: str):
+    if question_id in EXAMPLES_BY_ID:
+        return EXAMPLES_BY_ID[question_id]
+    for question_set in ss.generated_explore.values():
+        for question in question_set["questions"]:
+            if question["id"] == question_id:
+                return question
+    return None
+
+
 def badges(e):
     return (f'<span class="ll-badge accent">{e["topic"]}</span>'
             f'<span class="ll-badge">{e["level"]}</span>')
@@ -219,10 +240,12 @@ def example_card(e, key_prefix: str):
     status = "✓ Solved" if e["id"] in stats["solved"] else ("Attempted" if e["id"] in stats["attempted_ids"] else "")
     with st.container(border=True):
         st.markdown(badges(e) + (f'<span class="ll-badge">{status}</span>' if status else ""), unsafe_allow_html=True)
+        if e.get("_ai"):
+            st.caption("AI-generated")
         st.markdown(f"**{e['title']}**")
-        st.markdown(f'<div class="ll-muted">{e["description"]}</div>', unsafe_allow_html=True)
-        st.button("Open example →", key=f"{key_prefix}-{e['id']}", on_click=go,
-                  args=("Explore Examples", e["id"]), use_container_width=True)
+        st.markdown(f'<div class="ll-muted">{escape(e["description"])}</div>', unsafe_allow_html=True)
+        st.button("Open question →", key=f"{key_prefix}-{e['id']}", on_click=go,
+                  args=("Explore Examples", e["id"]), width="stretch")
 
 
 # ---------------- Pages ----------------
@@ -237,23 +260,32 @@ def page_home():
     c = st.columns(4)
     for col, (label, val) in zip(c, [("Attempts", s["total_attempts"]), ("Correct", s["correct"]),
                                      ("Accuracy", f"{s['accuracy']*100:.0f}%"),
-                                     ("Examples solved", f"{len(s['solved'])}/{len(EXAMPLES)}")]):
+                                     ("Examples solved", f"{len(s['solved'] & set(EXAMPLES_BY_ID))}/{len(EXAMPLES)}")]):
         with col, st.container(border=True):
             st.markdown(f'<div class="ll-kpi-label">{label}</div><div class="ll-kpi">{val}</div>', unsafe_allow_html=True)
 
-    st.markdown("## Recommended next")
+    st.markdown("## Recommended topics")
     recs = recommend_examples(ss.progress)
     if recs:
         cols = st.columns(len(recs))
         for col, e in zip(cols, recs):
-            with col:
-                example_card(e, "home-rec")
+            with col, st.container(border=True):
+                st.markdown(f"**{e['topic']}**")
+                st.markdown('<div class="ll-muted">Generate a fresh set at the difficulty you choose.</div>',
+                            unsafe_allow_html=True)
+                st.button(
+                    "Choose topic →",
+                    key=f"home-rec-{e['topic']}",
+                    on_click=go_to_topic,
+                    args=(e["topic"],),
+                    width="stretch",
+                )
     else:
-        st.success("You've solved every example — try Practice mode for more.")
+        st.success("You've practiced every sample topic — try a new quiz in Practice mode.")
 
     st.markdown("## How it works")
     h = st.columns(3)
-    steps = [("1 · Pick an example", "Browse 23 ready-made programs across 10 beginner topics."),
+    steps = [("1 · Pick a topic", "Generate fresh Python questions across 10 topics."),
              ("2 · Predict the output", "Type your prediction or pick from multiple choices, then Check Answer."),
              ("3 · Learn from it", "Get a hint, a line-by-line explanation, or ask the AI tutor why.")]
     for col, (t, d) in zip(h, steps):
@@ -261,15 +293,17 @@ def page_home():
             st.markdown(f"**{t}**")
             st.markdown(f'<div class="ll-muted">{d}</div>', unsafe_allow_html=True)
     b1, b2, _ = st.columns([1, 1, 2])
-    b1.button("Explore examples", type="primary", on_click=go, args=("Explore Examples",), use_container_width=True)
-    b2.button("Start a quiz", on_click=go, args=("Practice",), use_container_width=True)
+    b1.button("Explore topics", type="primary", on_click=go, args=("Explore Examples",), width="stretch")
+    b2.button("Start a quiz", on_click=go, args=("Practice",), width="stretch")
 
 
 def render_detail(e):
-    st.button("← Back to all examples", on_click=lambda: ss.update(selected=None))
+    st.button("← Back to questions", on_click=lambda: ss.update(selected=None))
     st.markdown(badges(e), unsafe_allow_html=True)
     st.markdown(f"# {e['title']}")
-    st.markdown(f'<div class="ll-muted">{e["description"]}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="ll-muted">{escape(e["description"])}</div>', unsafe_allow_html=True)
+    if e.get("_ai"):
+        st.caption("AI-generated question and answer key. Review the explanation if anything seems incorrect.")
     st.code(e["code"], language="python", line_numbers=True)
     st.markdown(f"**{e['question']}**")
 
@@ -281,10 +315,10 @@ def render_detail(e):
                             placeholder="e.g. 3.5 3")
 
     c1, c2, c3 = st.columns(3)
-    check = c1.button("Check Answer", type="primary", key=f"chk-{e['id']}", use_container_width=True)
-    if c2.button("Show Hint", key=f"hint-{e['id']}", use_container_width=True):
+    check = c1.button("Check Answer", type="primary", key=f"chk-{e['id']}", width="stretch")
+    if c2.button("Show Hint", key=f"hint-{e['id']}", width="stretch"):
         ss.show_hint.add(e["id"])
-    if c3.button("Show Explanation", key=f"exp-{e['id']}", use_container_width=True):
+    if c3.button("Show Explanation", key=f"exp-{e['id']}", width="stretch"):
         ss.show_expl.add(e["id"])
 
     if check:
@@ -323,8 +357,11 @@ def render_detail(e):
             st.markdown("**Correct output**")
             st.code(e["answer"], language="text")
             st.markdown("**Line-by-line explanation**")
-            for line in e["explanation"]:
-                st.markdown(f"- {line}")
+            if isinstance(e["explanation"], list):
+                for line in e["explanation"]:
+                    st.markdown(f"- {line}")
+            else:
+                st.markdown(e["explanation"])
 
     with st.expander("✨ Still confused? Ask the AI tutor about this topic"):
         q = st.text_input("Your question", key=f"cq-{e['id']}", placeholder=f"e.g. When should I use {e['topic'].lower()}?")
@@ -339,22 +376,74 @@ def render_detail(e):
 
 
 def page_explore():
-    if ss.selected and ss.selected in EXAMPLES_BY_ID:
-        render_detail(EXAMPLES_BY_ID[ss.selected])
+    if ss.selected:
+        question = find_explore_question(ss.selected)
+        if question:
+            render_detail(question)
+            return
+        ss.selected = None
+    st.markdown("# Explore questions")
+    st.markdown(
+        '<div class="ll-muted">Choose a topic and difficulty, then generate five fresh questions. '
+        'Fresh question generation uses your saved personal Gemini key; otherwise, verified sample questions are shown.</div>',
+        unsafe_allow_html=True,
+    )
+    if "recommended_topic" in ss:
+        ss.f_topic = ss.pop("recommended_topic")
+    if ss.get("f_topic") not in TOPICS:
+        ss.pop("f_topic", None)
+    topic = st.selectbox("Topic", TOPICS, key="f_topic")
+    difficulty = st.segmented_control(
+        "Difficulty",
+        list(DIFFICULTIES),
+        default="Medium",
+        key="f_difficulty",
+    )
+    if difficulty not in DIFFICULTIES:
+        st.warning("Choose a difficulty to continue.")
         return
-    st.markdown("# Explore Examples")
-    st.markdown(f'<div class="ll-muted">{len(EXAMPLES)} predefined programs. Open one to predict its output.</div>',
-                unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([2, 1.3, 1])
-    q = c1.text_input("Search", placeholder="Search titles, topics or code…", key="search")
-    topic = c2.selectbox("Topic", ["All"] + TOPICS, key="f_topic")
-    level = c3.selectbox("Difficulty", ["All", "Beginner", "Intermediate"], key="f_level")
-    items = filter_examples(q, topic, level)
-    if not items:
-        st.info("No examples match those filters.")
+    set_key = f"{topic}|{difficulty}"
+    if st.button("Generate 5 questions", type="primary", key="generate-explore"):
+        fallback = sample_questions(topic, difficulty)
+        previous = [
+            question
+            for key, saved_set in ss.generated_explore.items()
+            if key.startswith(f"{topic}|")
+            for question in saved_set["questions"]
+        ]
+        with st.spinner("Generating fresh questions…"):
+            questions, from_ai, error = generate_question_set(
+                topic,
+                difficulty,
+                size=5,
+                fallback_questions=fallback,
+                avoid_questions=previous,
+            )
+        ss.generated_explore[set_key] = {
+            "questions": questions,
+            "from_ai": from_ai,
+            "error": error,
+        }
+        ss.selected = None
+
+    question_set = ss.generated_explore.get(set_key)
+    if not question_set:
+        st.info("Your questions will appear here after you generate a set.")
         return
+    if question_set["error"]:
+        st.info(question_set["error"])
+    if question_set["from_ai"]:
+        st.caption(f"Fresh {difficulty.lower()} questions generated for {topic}.")
+    else:
+        st.caption(
+            f"Showing {len(question_set['questions'])} verified sample questions for {topic}. "
+            "Hard uses intermediate samples where available."
+            if difficulty == "Hard"
+            else f"Showing {len(question_set['questions'])} verified sample questions for {topic}."
+        )
+    st.markdown(f"## {topic} · {difficulty}")
     cols = st.columns(3)
-    for i, e in enumerate(items):
+    for i, e in enumerate(question_set["questions"]):
         with cols[i % 3]:
             example_card(e, "exp")
 
@@ -366,14 +455,43 @@ def page_practice():
         st.markdown('<div class="ll-muted">A short multiple-choice quiz on one topic. Feedback after every question.</div>',
                     unsafe_allow_html=True)
         topic = st.selectbox("Choose a topic", TOPICS, key="quiz_topic")
-        n = len(build_quiz(topic))
-        st.caption(f"{n} questions")
+        difficulty = st.segmented_control(
+            "Difficulty",
+            list(DIFFICULTIES),
+            default=ss.practice_difficulty,
+            key="practice_difficulty",
+        )
+        if difficulty not in DIFFICULTIES:
+            st.warning("Choose a difficulty to continue.")
+            return
+        st.caption(
+            "Your personal Gemini key creates five fresh questions. Without one, sample mode uses the verified examples "
+            "closest to this difficulty."
+        )
         if st.button("Start quiz", type="primary"):
-            ss.quiz = {"topic": topic, "questions": build_quiz(topic), "idx": 0, "answers": {}}
+            fallback = build_quiz(topic, difficulty=difficulty)
+            with st.spinner("Preparing your quiz…"):
+                questions, from_ai, error = generate_question_set(
+                    topic, difficulty, size=5, fallback_questions=fallback
+                )
+            ss.quiz = {
+                "topic": topic,
+                "difficulty": difficulty,
+                "questions": questions,
+                "from_ai": from_ai,
+                "error": error,
+                "idx": 0,
+                "answers": {},
+            }
             st.rerun()
         return
 
     qs, idx = quiz["questions"], quiz["idx"]
+    if quiz.get("error"):
+        st.info(quiz["error"])
+    difficulty = quiz.get("difficulty", "Medium")
+    from_ai = quiz.get("from_ai", False)
+    st.caption(f"{difficulty} · {'AI-generated' if from_ai else 'verified sample questions'}")
     if idx >= len(qs):
         score = sum(1 for a in quiz["answers"].values() if a["correct"])
         st.markdown(f"## Quiz complete — {quiz['topic']}")
@@ -392,12 +510,16 @@ def page_practice():
                                 f"<span class='ll-ok'>Correct:</span> `{fmt_choice(q['answer'])}`", unsafe_allow_html=True)
                     st.markdown(q["explanation"])
             st.markdown("### Extra practice for this topic")
-            render_extra_question(quiz["topic"], {q["id"] for q in qs})
+            render_extra_question(
+                quiz["topic"],
+                {q["id"] for q in qs},
+                difficulty,
+            )
         c1, c2 = st.columns(2)
-        if c1.button("Retake quiz", use_container_width=True):
+        if c1.button("Retake quiz", width="stretch"):
             ss.quiz = {**quiz, "idx": 0, "answers": {}}
             st.rerun()
-        if c2.button("Choose another topic", use_container_width=True):
+        if c2.button("Choose another topic", width="stretch"):
             ss.quiz = None
             st.rerun()
         return
@@ -418,7 +540,13 @@ def page_practice():
                 else:
                     ok = check_answer(choice, q["answer"])
                     quiz["answers"][q["id"]] = {"choice": choice, "correct": ok}
-                    record_attempt(ss.progress, q["id"], q["topic"], ok, "practice")
+                    record_attempt(
+                        ss.progress,
+                        q["id"],
+                        q["topic"],
+                        ok,
+                        "ai-practice" if from_ai else "practice",
+                    )
                     persist()
                     st.rerun()
         else:
@@ -433,13 +561,19 @@ def page_practice():
                 st.rerun()
 
 
-def render_extra_question(topic: str, avoid: set):
-    if st.button("✨ Generate a new practice question", key=f"gen-{topic}"):
+def render_extra_question(topic: str, avoid: set, difficulty: str):
+    key = f"{topic}|{difficulty}"
+    if st.button("✨ Generate a new practice question", key=f"gen-{key}"):
+        previous = [
+            question
+            for saved_key, question in ss.extra_q.items()
+            if saved_key.startswith(f"{topic}|")
+        ]
         with st.spinner("Creating a question…"):
-            q, from_ai, err = generate_practice(topic, avoid)
-        ss.extra_q[topic] = {**q, "_ai": from_ai, "_err": err}
-        ss.extra_result.pop(topic, None)
-    q = ss.extra_q.get(topic)
+            q, from_ai, err = generate_practice(topic, avoid, difficulty, previous)
+        ss.extra_q[key] = {**q, "_ai": from_ai, "_err": err}
+        ss.extra_result.pop(key, None)
+    q = ss.extra_q.get(key)
     if not q:
         return
     with st.container(border=True):
@@ -450,15 +584,15 @@ def render_extra_question(topic: str, avoid: set):
         st.markdown(f"**{q['question']}**")
         if q.get("code"):
             st.code(q["code"], language="python")
-        res = ss.extra_result.get(topic)
+        res = ss.extra_result.get(key)
         choice = st.radio("Your answer", q["choices"], index=None, format_func=fmt_choice,
-                          key=f"xq-{topic}-{q['id']}", disabled=bool(res))
-        if not res and st.button("Check Answer", key=f"xchk-{topic}"):
+                          key=f"xq-{key}-{q['id']}", disabled=bool(res))
+        if not res and st.button("Check Answer", key=f"xchk-{key}"):
             if choice is None:
                 st.warning("Pick an answer first.")
             else:
                 ok = check_answer(choice, q["answer"])
-                ss.extra_result[topic] = {"choice": choice, "correct": ok}
+                ss.extra_result[key] = {"choice": choice, "correct": ok}
                 record_attempt(ss.progress, q["id"], topic, ok, "ai-practice" if q["_ai"] else "practice")
                 persist()
                 st.rerun()
@@ -497,12 +631,21 @@ def page_progress():
         st.markdown("**Needs work** (< 60% accuracy)")
         st.markdown("\n".join(f"- {t}" for t in s["weaknesses"]) or "_No weak topics yet._")
 
-    st.markdown("## Recommended next examples")
+    st.markdown("## Recommended topics")
     recs = recommend_examples(ss.progress)
     cols = st.columns(max(1, len(recs)))
     for col, e in zip(cols, recs):
-        with col:
-            example_card(e, "prog-rec")
+        with col, st.container(border=True):
+            st.markdown(f"**{e['topic']}**")
+            st.markdown('<div class="ll-muted">Generate a fresh set at your chosen difficulty.</div>',
+                        unsafe_allow_html=True)
+            st.button(
+                "Choose topic →",
+                key=f"prog-rec-{e['topic']}",
+                on_click=go_to_topic,
+                args=(e["topic"],),
+                width="stretch",
+            )
 
     st.divider()
     if st.button("Reset all progress"):
@@ -519,10 +662,10 @@ def page_about():
 LogicLab AI is a Samsung Innovation Campus project that helps beginners learn Python by **reading and predicting**
 instead of writing code from scratch.
 
-- **Predefined examples:** 23 verified programs across 10 topics, at beginner and intermediate levels.
-- **Checking you can trust:** every answer is compared with a verified expected output. The AI never grades the built-in questions.
-- **AI tutor (Gemini):** explains concepts, explains mistakes and writes extra practice questions.
-- **Sample mode:** with no API key, all examples, checks, quizzes and progress still work, and built-in notes replace the AI.
+- **Fresh questions:** generate five questions for any topic and choose Low, Medium, or Hard difficulty. A saved personal key is required; otherwise the verified sample questions are used.
+- **Checking:** answers are compared with the question's answer key. Built-in sample questions have verified answers; AI-generated answer keys may need review.
+- **AI tutor (Gemini):** explains concepts and mistakes. Tutoring can use the saved visitor key or configured deployment key.
+- **Sample mode:** without a personal key, Explore, quizzes, and extra practice use the verified examples.
 - **Safe by design:** the app never runs code that users type.
 - **Progress:** saved for this session and in a local `progress.json` file. No login needed.
 - **Your Gemini key:** optional visitor keys are stored in the current browser and sent to this app's server only when calling Gemini. Avoid saving keys on shared devices.
@@ -540,21 +683,22 @@ def render_sidebar():
     st.divider()
     s = compute_stats(ss.progress)
     st.caption("Your progress")
-    st.progress(min(1.0, len(s["solved"]) / len(EXAMPLES)), text=f"{len(s['solved'])}/{len(EXAMPLES)} examples solved")
+    solved_examples = len(s["solved"] & set(EXAMPLES_BY_ID))
+    st.progress(min(1.0, solved_examples / len(EXAMPLES)), text=f"{solved_examples}/{len(EXAMPLES)} examples solved")
     st.caption(f"Accuracy: {s['accuracy']*100:.0f}% · {s['total_attempts']} attempts")
     st.divider()
     if gemini_available():
         st.success("AI tutor: Gemini connected", icon="✨")
         st.caption(
             "Using your saved key." if ss.visitor_gemini_api_key
-            else "Using the app's configured key."
+            else "The tutor uses the app's configured key; fresh question generation requires your personal key."
         )
     else:
-        st.info("Sample mode: no GEMINI_API_KEY. Everything except live AI answers works.", icon="ℹ️")
+        st.info("Sample mode: built-in questions are available. Add a key for fresh Gemini questions.", icon="ℹ️")
     st.button(
         "Change API key" if ss.visitor_gemini_api_key else "Add your Gemini API key",
         on_click=open_api_key_dialog,
-        use_container_width=True,
+        width="stretch",
     )
 
 

@@ -20,7 +20,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(
         logic,
         "get_api_key",
-        lambda visitor_key=None: visitor_key or st.session_state.get("visitor_gemini_api_key"),
+        lambda visitor_key=None, personal_only=False: (
+            visitor_key or st.session_state.get("visitor_gemini_api_key")
+        ),
     )
     monkeypatch.setattr(logic, "PROGRESS_FILE", tmp_path / "progress.json")
     monkeypatch.chdir(ROOT)
@@ -52,7 +54,7 @@ def btn(at, label):
 def test_home_renders_recommendations():
     at = new_app()
     assert any("Welcome to LogicLab AI" in m.value for m in at.markdown)
-    assert sum(1 for b in at.button if b.label == "Open example →") == 3
+    assert sum(1 for b in at.button if b.label == "Choose topic →") == 3
 
 
 def test_first_visit_can_save_a_personal_gemini_key():
@@ -151,9 +153,11 @@ def test_saved_personal_key_can_be_removed():
 def test_explore_select_check_wrong_then_right():
     at = new_app()
     at.sidebar.radio[0].set_value("Explore Examples").run()
-    assert sum(1 for b in at.button if b.label == "Open example →") == 23
+    assert not any(b.label == "Open question →" for b in at.button)
     at.selectbox(key="f_topic").set_value("Loops").run()
-    assert sum(1 for b in at.button if b.label == "Open example →") == 3
+    at.segmented_control(key="f_difficulty").set_value("Low").run()
+    btn(at, "Generate 5 questions").click().run()
+    assert sum(1 for b in at.button if b.label == "Open question →") == 1
     at.button(key="exp-loop-sum").click().run()
     assert any("Summing with range()" in m.value for m in at.markdown)
 
@@ -175,6 +179,7 @@ def test_explore_select_check_wrong_then_right():
 
     s = logic.compute_stats(at.session_state.progress)
     assert s["total_attempts"] == 2 and s["correct"] == 1
+    assert not at.exception
 
 
 def test_practice_quiz_scoring_and_progress():
@@ -183,14 +188,15 @@ def test_practice_quiz_scoring_and_progress():
     at.selectbox(key="quiz_topic").set_value("Tuples").run()
     btn(at, "Start quiz").click().run()
     qs = at.session_state.quiz["questions"]
+    expected = 0
     for i, q in enumerate(qs):
         wrong = next(c for c in q["choices"] if c != q["answer"])
-        pick = q["answer"] if i % 2 == 0 else wrong  # alternate right/wrong
+        pick = wrong if i == 0 else (q["answer"] if i % 2 == 0 else wrong)
+        expected += pick == q["answer"]
         at.radio(key=f"quiz-Tuples-{q['id']}").set_value(pick).run()
         btn(at, "Submit answer").click().run()
         next_label = "See final score" if i == len(qs) - 1 else "Next question →"
         btn(at, next_label).click().run()
-    expected = sum(1 for i in range(len(qs)) if i % 2 == 0)
     assert any(f"Score: {expected} / {len(qs)}" in p.proto.text for p in at.get("progress"))
 
     btn(at, "✨ Generate a new practice question").click().run()
@@ -202,6 +208,21 @@ def test_practice_quiz_scoring_and_progress():
     assert any(f"Tuples — {expected}/{len(qs)} correct" in p.proto.text for p in at.get("progress"))
     btn(at, "Reset all progress").click().run()
     assert logic.compute_stats(at.session_state.progress)["total_attempts"] == 0
+
+
+def test_hard_practice_uses_intermediate_samples_without_a_personal_key():
+    at = new_app()
+    at.sidebar.radio[0].set_value("Practice").run()
+    at.selectbox(key="quiz_topic").set_value("Loops").run()
+    at.segmented_control(key="practice_difficulty").set_value("Hard").run()
+    btn(at, "Start quiz").click().run()
+
+    sample_ids = {question["id"] for question in logic.sample_questions("Loops", "Hard")}
+    quiz = at.session_state.quiz
+    assert quiz["difficulty"] == "Hard"
+    assert {question["id"] for question in quiz["questions"]} == sample_ids
+    assert all(logic.EXAMPLES_BY_ID[question["id"]]["level"] == "Intermediate" for question in quiz["questions"])
+    assert not at.exception
 
 
 def test_about_page():

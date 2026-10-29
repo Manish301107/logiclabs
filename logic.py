@@ -8,12 +8,18 @@ import json
 import os
 import re
 from pathlib import Path
+from uuid import uuid4
 
 from examples_data import EXAMPLES, PRACTICE_EXTRAS, TOPICS, CONCEPT_NOTES
 
 EXAMPLES_BY_ID = {e["id"]: e for e in EXAMPLES}
 PROGRESS_FILE = Path(__file__).parent / "progress.json"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+DIFFICULTIES = {
+    "Low": "Beginner",
+    "Medium": "Intermediate",
+    "Hard": "Advanced",
+}
 
 
 # ---------- Deterministic grading ----------
@@ -134,8 +140,24 @@ def filter_examples(query: str = "", topic: str = "All", level: str = "All") -> 
     return out
 
 
-def build_quiz(topic: str, size: int = 5) -> list[dict]:
-    """Deterministic multiple-choice quiz for a topic: its examples + extra concept questions."""
+def build_quiz(topic: str, size: int = 5, difficulty: str | None = None) -> list[dict]:
+    """Build a quiz, optionally limited to built-in examples matching a difficulty."""
+    if difficulty is not None:
+        examples = sample_questions(topic, difficulty)
+        return [
+            {
+                "id": example["id"],
+                "topic": topic,
+                "question": example["question"],
+                "code": example["code"],
+                "choices": example["choices"],
+                "answer": example["answer"],
+                "explanation": " ".join(example["explanation"]),
+            }
+            for example in examples[:size]
+        ]
+
+    # Keep the existing five-question sample quiz for callers without a difficulty.
     qs = []
     for e in EXAMPLES:
         if e["topic"] == topic:
@@ -149,7 +171,7 @@ def build_quiz(topic: str, size: int = 5) -> list[dict]:
 
 
 # ---------- Gemini (optional) ----------
-def get_api_key(visitor_key: str | None = None) -> str | None:
+def get_api_key(visitor_key: str | None = None, personal_only: bool = False) -> str | None:
     if visitor_key is None:
         try:
             import streamlit as st
@@ -158,6 +180,8 @@ def get_api_key(visitor_key: str | None = None) -> str | None:
             visitor_key = None
     if visitor_key and visitor_key.strip():
         return visitor_key.strip()
+    if personal_only:
+        return None
 
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if key:
@@ -186,11 +210,14 @@ SYSTEM_PROMPT = (
 )
 
 
-def ask_gemini(prompt: str) -> tuple[str | None, str | None]:
+def ask_gemini(prompt: str, personal_key_only: bool = False) -> tuple[str | None, str | None]:
     """Return (text, error). Never raises."""
-    key = get_api_key()
+    key = get_api_key(personal_only=personal_key_only)
     if not key:
-        return None, "No GEMINI_API_KEY set — showing sample-mode content."
+        reason = "No personal Gemini API key set — showing sample questions." if personal_key_only else (
+            "No GEMINI_API_KEY set — showing sample-mode content."
+        )
+        return None, reason
     try:
         from google import genai
         from google.genai import types
@@ -260,27 +287,145 @@ def _extract_json(text: str):
         return None
 
 
-def generate_practice(topic: str, avoid_ids: set | None = None) -> tuple[dict, bool, str | None]:
-    """Returns (question, from_ai, error). Falls back to a verified local question."""
+def sample_questions(topic: str, difficulty: str) -> list[dict]:
+    """Return topic examples closest to the requested difficulty."""
+    if topic not in TOPICS:
+        raise ValueError(f"Unknown topic: {topic}")
+    if difficulty not in DIFFICULTIES:
+        raise ValueError(f"Unknown difficulty: {difficulty}")
+
+    sample_level = "Beginner" if difficulty == "Low" else "Intermediate"
+    matching = [
+        example for example in EXAMPLES
+        if example["topic"] == topic and example["level"] == sample_level
+    ]
+    return matching or [example for example in EXAMPLES if example["topic"] == topic]
+
+
+def _validated_generated_questions(data: object, topic: str, difficulty: str, size: int) -> list[dict] | None:
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+        return None
+    items = data["questions"]
+    if len(items) != size:
+        return None
+
+    questions = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        title = item.get("title")
+        description = item.get("description")
+        question = item.get("question")
+        code = item.get("code")
+        choices = item.get("choices")
+        answer = item.get("answer")
+        hint = item.get("hint")
+        explanation = item.get("explanation")
+        if not all(isinstance(value, str) for value in (
+            title, description, question, code, answer, hint, explanation,
+        )):
+            return None
+        if not (1 <= len(title.strip()) <= 100 and 1 <= len(description.strip()) <= 240
+                and 1 <= len(question.strip()) <= 300 and 1 <= len(code.strip()) <= 1200
+                and 1 <= len(answer.strip()) <= 500 and 1 <= len(hint.strip()) <= 300
+                and 1 <= len(explanation.strip()) <= 1200):
+            return None
+        if (
+            not isinstance(choices, list)
+            or len(choices) != 4
+            or not all(isinstance(choice, str) and 1 <= len(choice.strip()) <= 500 for choice in choices)
+        ):
+            return None
+        clean_choices = [choice.strip() for choice in choices]
+        clean_answer = answer.strip()
+        if len(set(clean_choices)) != 4 or clean_choices.count(clean_answer) != 1:
+            return None
+        questions.append({
+            "id": f"ai-{uuid4().hex}",
+            "title": title.strip(),
+            "description": description.strip(),
+            "topic": topic,
+            "level": DIFFICULTIES[difficulty],
+            "question": question.strip(),
+            "code": code.strip(),
+            "choices": clean_choices,
+            "answer": clean_answer,
+            "hint": hint.strip(),
+            "explanation": explanation.strip(),
+            "_ai": True,
+        })
+    return questions
+
+
+def generate_question_set(
+    topic: str,
+    difficulty: str,
+    size: int = 5,
+    fallback_questions: list[dict] | None = None,
+    avoid_questions: list[dict] | None = None,
+) -> tuple[list[dict], bool, str | None]:
+    """Generate a validated set or return local questions without executing code."""
+    if topic not in TOPICS:
+        raise ValueError(f"Unknown topic: {topic}")
+    if difficulty not in DIFFICULTIES:
+        raise ValueError(f"Unknown difficulty: {difficulty}")
+    if not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= 10:
+        raise ValueError("Question set size must be an integer from 1 to 10.")
+
     prompt = (
-        f"Create ONE new beginner multiple-choice question about Python {topic}. "
-        "Return ONLY JSON with keys: question (string), code (short Python snippet or empty string), "
-        "choices (array of exactly 4 strings), answer (one of the choices, exactly), explanation (string). "
-        "The code must be deterministic and print a short output."
+        f"Create exactly {size} fresh multiple-choice Python output-prediction questions for topic {topic}. "
+        f"Difficulty: {difficulty} ({DIFFICULTIES[difficulty]}). "
+        "Each question must contain a short, deterministic Python snippet that uses only basic language features "
+        "and print a short output. Do not use files, network access, imports, or input(). "
+        "Return ONLY a JSON object with a 'questions' array. Every item must have string keys "
+        "'title', 'description', 'question', 'code', 'answer', 'hint', and 'explanation', plus "
+        "'choices' (exactly four distinct strings). The answer must exactly match one choice. "
+        "Keep each snippet and explanation beginner-readable, and ensure the answer follows from the code."
     )
-    text, err = ask_gemini(prompt)
+    if avoid_questions:
+        recent = [
+            {"question": question.get("question", ""), "code": question.get("code") or ""}
+            for question in avoid_questions[-10:]
+        ]
+        prompt += (
+            "\nDo not repeat or lightly reword these questions or code snippets:\n"
+            + json.dumps(recent, ensure_ascii=False)
+        )
+    text, err = ask_gemini(prompt, personal_key_only=True)
     if text:
-        data = _extract_json(text)
-        if (isinstance(data, dict) and isinstance(data.get("choices"), list) and len(data["choices"]) == 4
-                and data.get("answer") in data["choices"] and data.get("question")):
-            return ({"id": f"ai-{abs(hash(data['question'])) % 10**8}", "topic": topic,
-                     "question": str(data["question"]), "code": data.get("code") or None,
-                     "choices": [str(c) for c in data["choices"]], "answer": str(data["answer"]),
-                     "explanation": str(data.get("explanation", ""))}, True, None)
-        err = "Gemini's question was not in a usable format — showing a built-in question instead."
+        generated = _validated_generated_questions(_extract_json(text), topic, difficulty, size)
+        if generated is not None:
+            return generated, True, None
+        err = "Gemini's questions were not in a usable format — showing built-in questions instead."
+
+    fallback = fallback_questions if fallback_questions is not None else sample_questions(topic, difficulty)
+    return [dict(question) for question in fallback[:size]], False, err
+
+
+def generate_practice(
+    topic: str,
+    avoid_ids: set | None = None,
+    difficulty: str = "Medium",
+    avoid_questions: list[dict] | None = None,
+) -> tuple[dict, bool, str | None]:
+    """Return one new practice question, with a built-in fallback."""
+    pool = sample_questions(topic, difficulty)
     avoid = avoid_ids or set()
-    pool = [x for x in PRACTICE_EXTRAS if x["topic"] == topic]
-    fresh = [x for x in pool if x["id"] not in avoid] or pool
-    q = dict(fresh[0])
-    q.setdefault("code", None)
-    return q, False, err
+    fresh = [question for question in pool if question["id"] not in avoid] or pool
+    known_questions = [
+        question for question in EXAMPLES + PRACTICE_EXTRAS
+        if question["topic"] == topic and question["id"] in avoid
+    ]
+    questions, from_ai, err = generate_question_set(
+        topic,
+        difficulty,
+        size=1,
+        fallback_questions=fresh,
+        avoid_questions=known_questions + (avoid_questions or []),
+    )
+    question = dict(questions[0])
+    question.setdefault("code", None)
+    question.setdefault("title", question["question"])
+    question.setdefault("description", question["question"])
+    question.setdefault("level", DIFFICULTIES[difficulty])
+    return question, from_ai, err

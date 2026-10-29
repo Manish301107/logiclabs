@@ -5,6 +5,7 @@ stored answer is the true output. The app itself never executes code.
 """
 import contextlib
 import io
+import json
 import os
 import sys
 
@@ -67,12 +68,20 @@ def test_filters_and_quiz():
     assert [e["id"] for e in logic.filter_examples("banana")] == ["dict-count"]
     for t in TOPICS:
         assert 4 <= len(logic.build_quiz(t)) <= 5
+        assert all(
+            question["id"] in logic.EXAMPLES_BY_ID
+            for question in logic.build_quiz(t, difficulty="Hard")
+        )
 
 
 def test_sample_mode_without_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setattr(logic, "get_api_key", lambda visitor_key=None: visitor_key.strip() if visitor_key else None)
+    monkeypatch.setattr(
+        logic,
+        "get_api_key",
+        lambda visitor_key=None, personal_only=False: visitor_key.strip() if visitor_key else None,
+    )
     assert not logic.gemini_available()
     text, from_ai, err = logic.explain_concept("Loops", "what is range?")
     assert not from_ai and "range" in text and err
@@ -82,6 +91,84 @@ def test_sample_mode_without_key(monkeypatch):
     assert not from_ai and EXAMPLES[0]["answer"] in text
 
 
+def test_generate_question_set_uses_difficulty_and_validates_full_set(monkeypatch):
+    prompts = []
+
+    def fake_gemini(prompt, personal_key_only=False):
+        assert personal_key_only
+        prompts.append(prompt)
+        questions = [
+            {
+                "title": f"Loop question {index}",
+                "description": "Trace a short loop.",
+                "question": "What does this program print?",
+                "code": f"print({index})",
+                "choices": [str(index), "10", "20", "30"],
+                "answer": str(index),
+                "hint": "Read the value passed to print.",
+                "explanation": f"The program prints {index}.",
+            }
+            for index in range(5)
+        ]
+        return json.dumps({"questions": questions}), None
+
+    monkeypatch.setattr(logic, "ask_gemini", fake_gemini)
+    questions, from_ai, error = logic.generate_question_set("Loops", "Hard", size=5)
+
+    assert from_ai and error is None
+    assert len(questions) == 5
+    assert len({question["id"] for question in questions}) == 5
+    assert all(question["_ai"] and question["level"] == "Advanced" for question in questions)
+    assert all(question["answer"] in question["choices"] for question in questions)
+    assert "exactly 5" in prompts[0] and "Hard (Advanced)" in prompts[0]
+
+
+def test_question_generation_falls_back_to_matching_samples(monkeypatch):
+    monkeypatch.setattr(
+        logic, "ask_gemini", lambda prompt, personal_key_only=False: (None, "Gemini quota reached.")
+    )
+
+    expected = logic.sample_questions("Loops", "Hard")
+    questions, from_ai, error = logic.generate_question_set("Loops", "Hard", size=5)
+
+    assert not from_ai and error == "Gemini quota reached."
+    assert [question["id"] for question in questions] == [question["id"] for question in expected]
+    assert len(questions) == 2
+    assert all(question["level"] == "Intermediate" for question in questions)
+
+
+def test_invalid_ai_question_set_uses_complete_fallback(monkeypatch):
+    invalid = {
+        "questions": [{
+            "title": "Bad question",
+            "description": "Invalid choices.",
+            "question": "What prints?",
+            "code": "print(1)",
+            "choices": ["1", "1", "2", "3"],
+            "answer": "1",
+            "hint": "Look at print.",
+            "explanation": "It prints 1.",
+        }]
+    }
+    monkeypatch.setattr(
+        logic, "ask_gemini", lambda prompt, personal_key_only=False: (json.dumps(invalid), None)
+    )
+    fallback = logic.sample_questions("Loops", "Low")
+
+    questions, from_ai, error = logic.generate_question_set(
+        "Loops", "Low", size=1, fallback_questions=fallback
+    )
+
+    assert not from_ai
+    assert "not in a usable format" in error
+    assert questions[0]["id"] == fallback[0]["id"]
+
+
 def test_visitor_api_key_overrides_configured_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "deployment-key")
     assert logic.get_api_key(" visitor-key ") == "visitor-key"
+
+
+def test_fresh_questions_require_a_personal_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "deployment-key")
+    assert logic.get_api_key(personal_only=True) is None
