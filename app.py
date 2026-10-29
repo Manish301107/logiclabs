@@ -39,38 +39,43 @@ st.markdown(
 <style>
 :root{--ll-bg:#0b1020;--ll-panel:#111827;--ll-panel-2:#182338;--ll-border:#283449;--ll-text:#e8ecf5;
 --ll-muted:#a2aec2;--ll-accent:#b4a5ff;--ll-accent-soft:rgba(164,142,255,.13);--ll-ok:#6ee7b7;--ll-bad:#fda4af;}
-html,body{font-family:Inter,"Segoe UI",system-ui,sans-serif;}
-.block-container{max-width:1180px;}
-h1{font-size:1.85rem!important;font-weight:700!important;letter-spacing:-.035em;line-height:1.2!important;}
-h2{font-size:1.35rem!important;font-weight:650!important;letter-spacing:-.02em;}
-h3{font-size:1.08rem!important;font-weight:650!important;}
+html,body{font-family:Inter,"Segoe UI Variable","Segoe UI",system-ui,sans-serif;}
+.block-container{max-width:1220px;}
+h1{font-size:1.95rem!important;font-weight:700!important;letter-spacing:-.04em;line-height:1.2!important;}
+h2{font-size:1.4rem!important;font-weight:650!important;letter-spacing:-.025em;}
+h3{font-size:1.1rem!important;font-weight:650!important;}
 div[data-testid="stAppViewContainer"]{background:
-radial-gradient(ellipse at 12% 0%,rgba(114,87,216,.10),transparent 34%),var(--ll-bg);}
+radial-gradient(ellipse at 12% 0%,rgba(114,87,216,.13),transparent 34%),
+radial-gradient(ellipse at 95% 35%,rgba(56,189,248,.035),transparent 28%),var(--ll-bg);}
 div[data-testid="stVerticalBlockBorderWrapper"]{border-color:var(--ll-border)!important;
-background:linear-gradient(145deg,rgba(255,255,255,.025),transparent 52%),var(--ll-panel);
-border-radius:16px;box-shadow:0 10px 28px rgba(0,0,0,.12);transition:border-color .18s ease, transform .18s ease, box-shadow .18s ease;}
+background:linear-gradient(145deg,rgba(255,255,255,.035),transparent 58%),var(--ll-panel);
+border-radius:18px;box-shadow:0 12px 30px rgba(0,0,0,.14);transition:border-color .18s ease, transform .18s ease, box-shadow .18s ease;}
 div[data-testid="stVerticalBlockBorderWrapper"]:hover{border-color:#51477f!important;transform:translateY(-2px);
-box-shadow:0 14px 32px rgba(0,0,0,.2);}
+box-shadow:0 16px 36px rgba(0,0,0,.22);}
 .ll-badge{display:inline-block;font-size:.72rem;padding:.12rem .55rem;border-radius:999px;margin-right:.35rem;
 border:1px solid var(--ll-border);color:#bac5d8;background:var(--ll-panel-2);font-weight:550;}
 .ll-badge.accent{color:#d5ccff;background:var(--ll-accent-soft);border-color:#51477f;}
 .ll-muted{color:var(--ll-muted);font-size:.94rem;line-height:1.65;}
+.ll-key-title{font-size:1.25rem;font-weight:700;letter-spacing:-.025em;margin-bottom:.3rem;}
 .ll-kpi{font-size:1.8rem;font-weight:700;line-height:1.15;letter-spacing:-.035em;margin-top:.25rem;}
 .ll-kpi-label{color:var(--ll-muted);font-size:.74rem;text-transform:uppercase;letter-spacing:.09em;font-weight:600;}
 .ll-hero{padding:1.7rem 1.8rem;border:1px solid #342e55;border-radius:18px;background:
-radial-gradient(ellipse at 90% 0%,rgba(164,142,255,.14),transparent 48%),
+radial-gradient(ellipse at 90% 0%,rgba(164,142,255,.18),transparent 48%),
 linear-gradient(145deg,rgba(114,87,216,.09),transparent 65%),var(--ll-panel);margin-bottom:1.3rem;
 box-shadow:0 16px 40px rgba(0,0,0,.16);}
 .ll-ok{color:var(--ll-ok);font-weight:650}.ll-bad{color:var(--ll-bad);font-weight:650}
 .stButton>button{border-radius:.7rem;border:1px solid var(--ll-border);font-weight:600;
-transition:border-color .15s ease,background .15s ease,transform .15s ease,box-shadow .15s ease;}
-.stButton>button:hover{border-color:#8f7af0;transform:translateY(-1px);box-shadow:0 5px 16px rgba(114,87,216,.16);}
+transition:border-color .15s ease,background .15s ease,transform .15s ease,box-shadow .15s ease;min-height:2.65rem;}
+.stButton>button:hover{border-color:#8f7af0;background:rgba(164,142,255,.07);transform:translateY(-1px);
+box-shadow:0 5px 16px rgba(114,87,216,.16);}
 .stButton>button[kind="primary"]{box-shadow:0 4px 14px rgba(114,87,216,.2);}
+[data-testid="stForm"]{border:0;padding:0;}
 [data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea,
 [data-testid="stSelectbox"] [data-baseweb="select"]>div{border-radius:.7rem;}
 [data-testid="stTextInput"] input:focus,[data-testid="stTextArea"] textarea:focus{border-color:#8f7af0;
 box-shadow:0 0 0 1px #8f7af0;}
 div[data-testid="stCode"]{border:1px solid var(--ll-border);border-radius:12px;overflow:hidden;}
+div[data-testid="stProgressBar"]>div>div{background:linear-gradient(90deg,#7257d8,#a78bfa);}
 code,pre{font-size:.9rem!important;}
 </style>
 """,
@@ -110,13 +115,12 @@ def queue_api_key_command(action: str, api_key: str | None = None):
     ss.api_key_dialog_open = False
 
 
-def save_visitor_api_key():
-    api_key = ss.get("visitor_gemini_api_key_input", "").strip()
+def save_visitor_api_key(api_key: str):
+    api_key = api_key.strip()
     if not api_key:
         ss.api_key_input_error = "Enter a Gemini API key, or continue without one."
         return
     ss.pop("api_key_input_error", None)
-    ss.pop("visitor_gemini_api_key_input", None)
     queue_api_key_command("save", api_key)
 
 
@@ -140,45 +144,59 @@ def open_api_key_dialog():
 
 @st.dialog("Connect your Gemini API key")
 def api_key_dialog():
-    st.markdown(
-        "Add your own key to use the Gemini tutor. It will be remembered in this "
-        "browser and can be changed or removed from the sidebar."
-    )
-    st.caption(
-        "Your key is stored in this browser, not in the project or a shared database. "
-        "It is sent to this app's server when the tutor calls Gemini. Avoid saving it "
-        "on shared devices."
-    )
-    if ss.get("api_key_input_error"):
-        st.error(ss.api_key_input_error)
-
-    st.text_input(
-        "Gemini API key",
-        type="password",
-        key="visitor_gemini_api_key_input",
-        placeholder="Paste your Gemini API key",
-    )
-    st.button(
-        "Save key",
-        type="primary",
-        on_click=save_visitor_api_key,
-        key="save_visitor_gemini_api_key",
-        width="stretch",
-    )
-    st.button(
-        "Continue without changing" if ss.api_key_setup_done
-        else "Continue without a personal key",
-        on_click=skip_visitor_api_key,
-        key="skip_visitor_gemini_api_key",
-        width="stretch",
-    )
-    if ss.visitor_gemini_api_key:
-        st.button(
-            "Remove saved key",
-            on_click=clear_visitor_api_key,
-            key="clear_visitor_gemini_api_key",
-            width="stretch",
+    with st.container(border=True):
+        st.markdown(
+            '<div class="ll-key-title">Bring your own Gemini key</div>'
+            '<div class="ll-muted">Use your own quota for AI explanations and extra practice. '
+            'You can replace or remove the key any time.</div>',
+            unsafe_allow_html=True,
         )
+        st.caption(
+            "Saved only in this browser. The key is sent to this app server when the AI "
+            "tutor is used. Don’t save it on a shared device."
+        )
+        if ss.get("api_key_input_error"):
+            st.error(ss.api_key_input_error)
+
+        with st.form("visitor-gemini-key-form", clear_on_submit=False):
+            api_key = st.text_input(
+                "Gemini API key",
+                type="password",
+                key="visitor_gemini_api_key_input",
+                placeholder="Paste your Gemini API key",
+                help="Create or manage your key in Google AI Studio.",
+            )
+            save_clicked = st.form_submit_button(
+                "Save key",
+                type="primary",
+                key="save_visitor_gemini_api_key",
+                width="stretch",
+            )
+            skip_clicked = st.form_submit_button(
+                "Continue without changing" if ss.api_key_setup_done
+                else "Continue without a personal key",
+                key="skip_visitor_gemini_api_key",
+                width="stretch",
+            )
+            if ss.visitor_gemini_api_key:
+                remove_clicked = st.form_submit_button(
+                    "Remove saved key",
+                    key="clear_visitor_gemini_api_key",
+                    width="stretch",
+                )
+            else:
+                remove_clicked = False
+
+        if save_clicked:
+            save_visitor_api_key(api_key)
+            if not ss.get("api_key_input_error"):
+                st.rerun()
+        elif skip_clicked:
+            skip_visitor_api_key()
+            st.rerun()
+        elif remove_clicked:
+            clear_visitor_api_key()
+            st.rerun()
 
 
 def go(page: str, example_id: str | None = None):

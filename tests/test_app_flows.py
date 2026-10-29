@@ -69,7 +69,7 @@ def test_first_visit_can_save_a_personal_gemini_key():
     at.run()
     assert any(field.label == "Gemini API key" for field in at.text_input)
     at.text_input(key="visitor_gemini_api_key_input").set_value("visitor-test-key")
-    btn(at, "Save key").click().run()
+    at.form_submit_button(key="save_visitor_gemini_api_key").click().run()
     command = at.session_state.pending_api_key_command
     assert command["action"] == "save"
     assert command["apiKey"] == "visitor-test-key"
@@ -85,6 +85,66 @@ def test_first_visit_can_save_a_personal_gemini_key():
     at.run()
     assert at.session_state.visitor_gemini_api_key == "visitor-test-key"
     assert at.session_state.pending_api_key_command is None
+    assert not at.exception
+
+
+def test_first_visit_can_continue_without_a_personal_key():
+    at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=30)
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": None,
+            "setup_done": False,
+            "error": None,
+            "command_id": None,
+        }
+    }
+    at.run()
+    at.form_submit_button(key="skip_visitor_gemini_api_key").click().run()
+    command = at.session_state.pending_api_key_command
+    assert command["action"] == "skip"
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": None,
+            "setup_done": True,
+            "error": None,
+            "command_id": command["id"],
+        }
+    }
+    at.run()
+    assert at.session_state.api_key_setup_done
+    assert not at.text_input
+    assert not at.exception
+
+
+def test_saved_personal_key_can_be_removed():
+    at = AppTest.from_file(os.path.join(ROOT, "app.py"), default_timeout=30)
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": "visitor-test-key",
+            "setup_done": True,
+            "error": None,
+            "command_id": None,
+        }
+    }
+    at.run()
+    btn(at, "Change API key").click().run()
+    at.form_submit_button(key="clear_visitor_gemini_api_key").click().run()
+    command = at.session_state.pending_api_key_command
+    assert command["action"] == "clear"
+    at.session_state[COMPONENT_STATE_KEY] = {
+        "value": {
+            "ready": True,
+            "api_key": None,
+            "setup_done": True,
+            "error": None,
+            "command_id": command["id"],
+        }
+    }
+    at.run()
+    assert at.session_state.visitor_gemini_api_key is None
     assert not at.exception
 
 
